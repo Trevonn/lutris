@@ -44,6 +44,16 @@ PLATFORM_PATTERNS = {
     "PlayStation Portable": "psp",
     "PlayStation": "ps1",
     "CD-i": "cdi",
+    "MSX2": "msx",
+    "Archimedes": "archimedes",
+    "Acorn BBC": "bbc",
+    "Acorn Electron": "electron",
+    "Bally": "astrocade",
+    "WonderSwan Color": "wonderswancolor",
+    "WonderSwan": "wonderswan",
+    "Amstrad CPC - Games - [DSK]": "cpc6128disk",
+    "Amstrad CPC - Games - [CPR]": "gx4000",
+    "Apple II": "apple2",
 }
 
 

@@ -31,9 +31,11 @@ def get_services():
         "gog": GOGService,
         "humblebundle": HumbleBundleService,
         "egs": EpicGamesStoreService,
+        "itchio": ItchIoService,
         "origin": OriginService,
         "ubisoft": UbisoftConnectService,
-        "amazon": AmazonService
+        "amazon": AmazonService,
+        "battlenet": BattleNetService,
     }
     if not LINUX_SYSTEM.is_flatpak:
         _services["xdg"] = XDGService
@@ -51,7 +53,6 @@ SERVICES = get_services()
 # Those services are not yet ready to be used
 WIP_SERVICES = {
     "battlenet": BattleNetService,
-    "itchio": ItchIoService,
     "mame": MAMEService,
     "flathub": FlathubService
 }

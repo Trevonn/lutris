@@ -4,6 +4,7 @@ import sqlite3
 from gettext import gettext as _
 
 import gi
+
 gi.require_version("Gdk", "3.0")
 gi.require_version("Gtk", "3.0")
 
@@ -144,9 +145,6 @@ def check_vulkan():
 def check_gnome():
     required_names = ['svg', 'png', 'jpeg']
     format_names = [f.get_name() for f in GdkPixbuf.Pixbuf.get_formats()]
-
-    logger.debug("Installed GdkPixbufFormats: %s", format_names)
-
     for required in required_names:
         if required not in format_names:
             logger.error("'%s' PixBuf support is not installed.", required.upper())

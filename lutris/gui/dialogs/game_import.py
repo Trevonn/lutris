@@ -1,18 +1,19 @@
-from gettext import gettext as _
 from copy import deepcopy
+from gettext import gettext as _
+
 from gi.repository import Gtk
 
-from lutris.game import Game
-from lutris.gui.dialogs import ModalDialog
 from lutris.config import write_game_config
 from lutris.database.games import add_game, get_games
-from lutris.scanners.tosec import search_tosec_by_md5, guess_platform, clean_rom_name
+from lutris.game import Game
+from lutris.gui.dialogs import ModalDialog
 from lutris.scanners.default_installers import DEFAULT_INSTALLERS
-from lutris.util.log import logger
-from lutris.util.jobs import AsyncCall
-from lutris.util.system import get_md5_hash, get_md5_in_zip
-from lutris.util.strings import slugify
+from lutris.scanners.tosec import clean_rom_name, guess_platform, search_tosec_by_md5
 from lutris.services.lutris import download_lutris_media
+from lutris.util.jobs import AsyncCall
+from lutris.util.log import logger
+from lutris.util.strings import slugify
+from lutris.util.system import get_md5_hash, get_md5_in_zip
 
 
 class ImportGameDialog(ModalDialog):
@@ -90,7 +91,7 @@ class ImportGameDialog(ModalDialog):
                 md5 = get_md5_hash(filename)
             self.file_hashes[filename] = md5
             self.files_by_hash[md5] = filename
-            self.checksum_labels[filename].set_markup("<i>%s</i>" % _("Looking up checkum on Lutris.net..."))
+            self.checksum_labels[filename].set_markup("<i>%s</i>" % _("Looking up checksum on Lutris.net..."))
             result = search_tosec_by_md5(md5)
             if not result:
                 result = [{"name": "Not found", "category": {"name": ""}, "roms": [{"md5": md5}]}]

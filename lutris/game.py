@@ -176,7 +176,7 @@ class Game(GObject.Object):
     @property
     def is_updatable(self):
         """Return whether the game can be upgraded"""
-        return self.service == "gog"
+        return self.service in ["gog", "itchio"]
 
     @property
     def is_favorite(self):
@@ -379,20 +379,24 @@ class Game(GObject.Object):
             "has_custom_icon": "icon" in self.custom_images,
             "has_custom_coverart_big": "coverart_big" in self.custom_images
         }
-
         self.id = games_db.add_or_update(**game_data)
         self.emit("game-updated")
 
-    def save_lastplayed(self):
+    def save_platform(self):
         """Save only the platform field- do not restore any other values the user may have changed
         in another window."""
         games_db.update_existing(id=self.id, slug=self.slug, platform=self.platform)
         self.emit("game-updated")
 
-    def save_platform(self):
+    def save_lastplayed(self):
         """Save only the lastplayed field- do not restore any other values the user may have changed
         in another window."""
-        games_db.update_existing(id=self.id, slug=self.slug, lastplayed=self.lastplayed)
+        games_db.update_existing(
+            id=self.id,
+            slug=self.slug,
+            lastplayed=self.lastplayed,
+            playtime=self.playtime
+        )
         self.emit("game-updated")
 
     def check_launchable(self):
@@ -637,13 +641,10 @@ class Game(GObject.Object):
         self.state = self.STATE_RUNNING
         self.emit("game-started")
 
-        print(f"Discord ID: {self.discord_id}")
         # Game is running, let's update discord status
         if settings.read_setting('discord_rpc') == 'True' and self.discord_id:
             logger.info("Updating Discord RPC Status")
             discord.client.update(self.discord_id)
-        else:
-            logger.info("Discord RPC Disabled or Discord APP ID Not Present")
 
         self.heartbeat = GLib.timeout_add(HEARTBEAT_DELAY, self.beat)
         with open(self.now_playing_path, "w", encoding="utf-8") as np_file:
@@ -733,6 +734,7 @@ class Game(GObject.Object):
         if not self.timer.finished:
             self.timer.end()
             self.playtime += self.timer.duration / 3600
+            logger.debug("Playtime: %s", self.formatted_playtime)
 
     @watch_game_errors(game_stop_result=False)
     def beat(self):
