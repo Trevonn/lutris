@@ -27,6 +27,7 @@ from lutris.gui.widgets.game_bar import GameBar
 from lutris.gui.widgets.gi_composites import GtkTemplate
 from lutris.gui.widgets.sidebar import LutrisSidebar
 from lutris.gui.widgets.utils import load_icon_theme, open_uri
+from lutris.scanners.lutris import add_to_path_cache, get_missing_game_ids, remove_from_path_cache
 # pylint: disable=no-member
 from lutris.services.base import BaseService
 from lutris.services.lutris import LutrisService
@@ -125,15 +126,15 @@ class LutrisWindow(Gtk.ApplicationWindow,
         self.game_bar = None
         self.revealer_box = Gtk.HBox(visible=True)
         self.game_revealer.add(self.revealer_box)
-
+        self.get_missing_games()
         self.connect("view-updated", self.update_store)
         GObject.add_emission_hook(BaseService, "service-login", self.on_service_login)
         GObject.add_emission_hook(BaseService, "service-logout", self.on_service_logout)
         GObject.add_emission_hook(BaseService, "service-games-loaded", self.on_service_games_updated)
         GObject.add_emission_hook(Game, "game-updated", self.on_game_updated)
         GObject.add_emission_hook(Game, "game-stopped", self.on_game_stopped)
-        GObject.add_emission_hook(Game, "game-removed", self.on_game_collection_changed)
-        GObject.add_emission_hook(Game, "game-unhandled_error", self.on_game_unhandled_error)
+        GObject.add_emission_hook(Game, "game-removed", self.on_game_removed)
+        GObject.add_emission_hook(Game, "game-unhandled-error", self.on_game_unhandled_error)
 
     def _init_actions(self):
         Action = namedtuple("Action", ("callback", "type", "enabled", "default", "accel"))
@@ -213,8 +214,7 @@ class LutrisWindow(Gtk.ApplicationWindow,
     def on_drag_data_received(self, widget, drag_context, x, y, data, info, time):
         """Handler for drop event"""
         file_paths = [unquote(urlparse(uri).path) for uri in data.get_uris()]
-        # Only deal with 1 file at the moment
-        dialog = ImportGameDialog([file_paths[0]], parent=self)
+        dialog = ImportGameDialog(file_paths, parent=self)
         dialog.run()
         dialog.destroy()
 
@@ -282,6 +282,17 @@ class LutrisWindow(Gtk.ApplicationWindow,
     def get_running_games(self):
         """Return a list of currently running games"""
         return games_db.get_games_by_ids([game.id for game in self.application.running_games])
+
+    def get_missing_games(self):
+        missing_ids = get_missing_game_ids()
+        missing_games = games_db.get_games_by_ids(missing_ids)
+        if missing_games:
+            self.sidebar.missing_row.show()
+        else:
+            if missing_ids:
+                logger.warning("Path cache out of date? (%s IDs missing)", len(missing_ids))
+            self.sidebar.missing_row.hide()
+        return missing_games
 
     def get_recent_games(self):
         """Return a list of currently running games"""
@@ -366,6 +377,7 @@ class LutrisWindow(Gtk.ApplicationWindow,
             return self.get_service_games(service_name)
         dynamic_categories = {
             "recent": self.get_recent_games,
+            "missing": self.get_missing_games,
             "running": self.get_running_games,
         }
         if self.filters.get("dynamic_category") in dynamic_categories:
@@ -748,7 +760,6 @@ class LutrisWindow(Gtk.ApplicationWindow,
 
     def on_game_unhandled_error(self, game, error):
         """Called when a game has sent the 'game-error' signal"""
-        logger.exception("%s has encountered an error: %s", game, error, exc_info=error)
         dialogs.ErrorDialog(str(error), parent=self)
         return True
 
@@ -843,6 +854,7 @@ class LutrisWindow(Gtk.ApplicationWindow,
 
     def on_game_updated(self, game):
         """Updates an individual entry in the view when a game is updated"""
+        add_to_path_cache(game)
         if game.appid and self.service:
             db_game = ServiceGameCollection.get_game(self.service.id, game.appid)
         else:
@@ -874,8 +886,10 @@ class LutrisWindow(Gtk.ApplicationWindow,
             self.game_store.remove_game(game.id)
         return True
 
-    def on_game_collection_changed(self, _sender):
+    def on_game_removed(self, game):
         """Simple method used to refresh the view"""
+        remove_from_path_cache(game)
+        self.get_missing_games()
         self.emit("view-updated")
         return True
 

@@ -1,18 +1,20 @@
+from collections import OrderedDict
 from copy import deepcopy
 from gettext import gettext as _
 
-from gi.repository import Gtk
+from gi.repository import GLib, Gtk
 
 from lutris.config import write_game_config
-from lutris.database.games import add_game, get_games
+from lutris.database.games import add_game
 from lutris.game import Game
 from lutris.gui.dialogs import ModalDialog
 from lutris.scanners.default_installers import DEFAULT_INSTALLERS
+from lutris.scanners.lutris import get_path_cache
 from lutris.scanners.tosec import clean_rom_name, guess_platform, search_tosec_by_md5
 from lutris.services.lutris import download_lutris_media
 from lutris.util.jobs import AsyncCall
 from lutris.util.log import logger
-from lutris.util.strings import slugify
+from lutris.util.strings import gtk_safe, slugify
 from lutris.util.system import get_md5_hash, get_md5_in_zip
 
 
@@ -24,114 +26,176 @@ class ImportGameDialog(ModalDialog):
             border_width=10
         )
         self.files = files
+        self.progress_labels = {}
         self.checksum_labels = {}
         self.description_labels = {}
         self.category_labels = {}
-        self.file_hashes = {}
-        self.files_by_hash = {}
+        self.error_labels = {}
         self.platform = None
-        self.set_size_request(480, 220)
-        self.get_content_area().add(self.add_file_labels(files))
-        self.auto_launch_button = Gtk.CheckButton(_("Launch game"), visible=True, active=True)
+        self.set_size_request(480, 240)
+        self.get_content_area().add(Gtk.Frame(
+            shadow_type=Gtk.ShadowType.ETCHED_IN,
+            child=self.get_file_labels_listbox(files)
+        ))
+        self.auto_launch_button = Gtk.CheckButton(_("Launch game"), visible=True, active=len(files) == 1)
         self.get_content_area().add(self.auto_launch_button)
         self.show_all()
         AsyncCall(self.search_checksums, self.search_result_finished)
 
-    def add_file_labels(self, files):
-        listbox = Gtk.ListBox()
+    def get_file_labels_listbox(self, files):
+        listbox = Gtk.ListBox(vexpand=True)
         listbox.set_selection_mode(Gtk.SelectionMode.NONE)
         for file_path in files:
             row = Gtk.ListBoxRow()
             vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
             vbox.set_margin_left(12)
+            vbox.set_margin_right(12)
 
-            description_label = Gtk.Label("")
-            description_label.set_halign(Gtk.Align.START)
+            description_label = Gtk.Label(halign=Gtk.Align.START)
             vbox.pack_start(description_label, True, True, 5)
             self.description_labels[file_path] = description_label
 
-            label = Gtk.Label(file_path)
-            label.set_halign(Gtk.Align.START)
-            vbox.pack_start(label, True, True, 5)
+            file_path_label = Gtk.Label(file_path, halign=Gtk.Align.START, xalign=0)
+            file_path_label.set_line_wrap(True)
+            vbox.pack_start(file_path_label, True, True, 5)
 
-            checksum_label = Gtk.Label("")
-            checksum_label.set_markup("<i>%s</i>" % _("Looking for installed game..."))
-            checksum_label.set_halign(Gtk.Align.START)
+            progress_label = Gtk.Label(halign=Gtk.Align.START)
+            vbox.pack_start(progress_label, True, True, 5)
+            self.progress_labels[file_path] = progress_label
+
+            checksum_label = Gtk.Label(no_show_all=True, halign=Gtk.Align.START)
             vbox.pack_start(checksum_label, True, True, 5)
             self.checksum_labels[file_path] = checksum_label
 
-            category_label = Gtk.Label("")
-            category_label.set_halign(Gtk.Align.START)
+            category_label = Gtk.Label(no_show_all=True, halign=Gtk.Align.START)
             vbox.pack_start(category_label, True, True, 5)
             self.category_labels[file_path] = category_label
+
+            error_label = Gtk.Label(no_show_all=True, halign=Gtk.Align.START, xalign=0)
+            error_label.set_line_wrap(True)
+            vbox.pack_start(error_label, True, True, 5)
+            self.error_labels[file_path] = error_label
 
             row.add(vbox)
             listbox.add(row)
         return listbox
 
     def game_launch(self, game):
-        if self.auto_launch_button.get_active():
-            game.emit("game-launch")
-            self.destroy()
-        else:
-            logger.debug('Game not launched')
+        game.emit("game-launch")
+        self.destroy()
 
     def search_checksums(self):
-        game_id = self.find_game(self.files[0])
-        if game_id:
-            self.game_launch(Game(game_id))
-            return []
+        game_path_cache = get_path_cache()
 
-        results = []
+        def show_progress(filepath, message):
+            # It's not safe to directly update labels from a worker thread, so
+            # this will do it on the GUI main thread instead.
+            GLib.idle_add(lambda: self.progress_labels[filepath].set_markup("<i>%s</i>" % gtk_safe(message)))
+
+        results = OrderedDict()  # must preserve order, on any Python version
         for filename in self.files:
-            self.checksum_labels[filename].set_markup("<i>%s</i>" % _("Calculating checksum..."))
-            if filename.lower().endswith(".zip"):
-                md5 = get_md5_in_zip(filename)
-            else:
-                md5 = get_md5_hash(filename)
-            self.file_hashes[filename] = md5
-            self.files_by_hash[md5] = filename
-            self.checksum_labels[filename].set_markup("<i>%s</i>" % _("Looking up checksum on Lutris.net..."))
-            result = search_tosec_by_md5(md5)
-            if not result:
-                result = [{"name": "Not found", "category": {"name": ""}, "roms": [{"md5": md5}]}]
-            results.append(result)
+            try:
+                show_progress(filename, _("Looking for installed game..."))
+                if filename in game_path_cache.values():
+                    for game_id in game_path_cache:
+                        if game_path_cache[game_id] == filename:
+                            # Found a game to launch instead of installing, but we can't safely
+                            # do this on this thread.
+                            game = Game(game_id)
+                            result = [{"name": game.name, "game": game, "roms": []}]
+                else:
+                    show_progress(filename, _("Calculating checksum..."))
+                    if filename.lower().endswith(".zip"):
+                        md5 = get_md5_in_zip(filename)
+                    else:
+                        md5 = get_md5_hash(filename)
+                    show_progress(filename, _("Looking up checksum on Lutris.net..."))
+                    result = search_tosec_by_md5(md5)
+                    if not result:
+                        raise RuntimeError(_("This ROM could not be identified."))
+            except Exception as error:
+                result = [{"error": error, "roms": []}]
+            finally:
+                show_progress(filename, "")
+
+            results[filename] = result
         return results
 
     def search_result_finished(self, results, error):
         if error:
             logger.error(error)
             return
-        for result in results:
-            for game in result:
-                for rom in game["roms"]:
-                    if rom["md5"] in self.files_by_hash:
-                        self.display_game_info(game, rom)
-                        if self.platform:
-                            filename = self.files_by_hash[rom["md5"]]
-                            game_id = self.add_game(game, filename)
-                            game = Game(game_id)
-                            game.emit("game-installed")
-                            self.game_launch(game)
-                        else:
-                            logger.warning("Platform not found")
+
+        launch_game = self.auto_launch_button.get_active()
+
+        if launch_game:
+            # Prefer to launch an already installed game
+            for result in results.values():
+                for rom_set in result:
+                    if "game" in rom_set:
+                        self.game_launch(rom_set["game"])
                         return
 
-    def display_game_info(self, game, rom):
-        filename = self.files_by_hash[rom["md5"]]
+        for filename, result in results.items():
+            for rom_set in result:
+                if self.import_rom(rom_set, filename, launch_game):
+                    if launch_game:
+                        return  # only launch the first install, then just stop
+                    break
+
+    def import_rom(self, rom_set, filename, launch_game):
+        """Tries to install a specific ROM, or reports failure. Returns True if
+        successful, False if not. If 'launch_game' is true, launches the game
+        it installed, if successful."""
+        try:
+            self.progress_labels[filename].hide()
+
+            if "error" in rom_set:
+                raise rom_set["error"]
+
+            for rom in rom_set["roms"]:
+                self.display_game_info(filename, rom_set, rom["md5"])
+                game_id = self.add_game(rom_set, filename)
+                game = Game(game_id)
+                game.emit("game-installed")
+                game.emit("game-updated")
+                if launch_game:
+                    self.game_launch(game)
+                return True
+        except Exception as ex:
+            logger.exception(_("Failed to import a ROM: %s"), ex)
+            error_label = self.error_labels[filename]
+            error_label.set_markup(
+                "<span style=\"italic\" foreground=\"red\">%s</span>" % gtk_safe(str(ex)))
+            error_label.show()
+
+        return False
+
+    def display_game_info(self, filename, rom_set, checksum):
         label = self.checksum_labels[filename]
-        label.set_text(rom["md5"])
+        label.set_text(checksum)
+        label.show()
         label = self.description_labels[filename]
-        label.set_markup("<b>%s</b>" % game["name"])
-        category = game["category"]["name"]
+        label.set_markup("<b>%s</b>" % rom_set["name"])
+        category = rom_set["category"]["name"]
         label = self.category_labels[filename]
         label.set_text(category)
-        self.platform = guess_platform(game)
+        label.show()
+        self.platform = guess_platform(rom_set)
 
-    def add_game(self, game, filepath):
-        name = clean_rom_name(game["name"])
+        if not self.platform:
+            raise RuntimeError(_("The platform '%s' is unknown to Lutris.") % category)
+
+    def add_game(self, rom_set, filepath):
+        name = clean_rom_name(rom_set["name"])
         logger.info("Installing %s", name)
-        installer = deepcopy(DEFAULT_INSTALLERS[self.platform])
+
+        try:
+            installer = deepcopy(DEFAULT_INSTALLERS[self.platform])
+        except KeyError as error:
+            raise RuntimeError(
+                _("Lutris does not have a default installer for the '%s' platform.") % self.platform) from error
+
         for key, value in installer["game"].items():
             if value == "rom":
                 installer["game"][key] = filepath
@@ -148,13 +212,3 @@ class ImportGameDialog(ModalDialog):
         )
         download_lutris_media(slug)
         return game_id
-
-    def find_game(self, filepath):
-        for game in get_games():
-            g = Game(game["id"])
-            if not g.config:
-                continue
-            for _key, value in g.config.game_config.items():
-                if value == filepath:
-                    logger.debug("Found %s", g)
-                    return g.id
